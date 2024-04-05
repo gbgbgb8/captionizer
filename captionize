@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Ensuring ffmpeg is installed
+if ! command -v ffmpeg &> /dev/null; then
+    echo "ffmpeg is not installed. Attempting to install using Homebrew..."
+    if ! command -v brew &> /dev/null; then
+        echo "Homebrew is not installed. Please install Homebrew first."
+        exit 1
+    fi
+    brew install ffmpeg || { echo "Failed to install ffmpeg with Homebrew. Please check your permissions."; exit 1; }
+else
+    echo "ffmpeg is already installed."
+fi
+
+# Ensuring Python3 and pip3 are installed
+if ! command -v python3 &> /dev/null || ! command -v pip3 &> /dev/null; then
+    echo "Python3 or pip3 is not installed. Please ensure both are installed."
+    exit 1
+else
+    echo "Python3 and pip3 are already installed."
+fi
+
+# Installing Python dependencies
+pip3 install lightning-whisper-mlx || { echo "Failed to install Python packages with pip3. Please check your permissions."; exit 1; }
+
+# Variables for file paths
+VIDEO_PATH="$1"
+AUDIO_PATH="${VIDEO_PATH%.*}.mp3"
+SUBTITLES_PATH="${VIDEO_PATH%.*}.srt"
+CAPTIONED_VIDEO_PATH="${VIDEO_PATH%.*}_captioned.mov"
+
+# Extract audio from video
+ffmpeg -i "$VIDEO_PATH" -q:a 0 -map a "$AUDIO_PATH"
+
+# Run Python code for transcription and SRT generation
+python3 - <<EOF
+import sys
+from lightning_whisper_mlx import LightningWhisperMLX
+
+audio_path = "$AUDIO_PATH"
+srt_path = "$SUBTITLES_PATH"
+
+def generate_srt(text, srt_path):
+    with open(srt_path, 'w') as srt_file:
+        lines = text.split('. ')
+        for i, line in enumerate(lines, 1):
+            start_seconds = i * 5  # Example timing calculation
+            end_seconds = start_seconds + 4  # Adjust based on your needs
+            srt_file.write(f"{i}\n")
+            srt_file.write(f"00:{start_seconds // 60:02d}:{start_seconds % 60:02d},000 --> 00:{end_seconds // 60:02d}:{end_seconds % 60:02d},000\n")
+            srt_file.write(f"{line}\n\n")
+
+try:
+    whisper = LightningWhisperMLX(model="distil-medium.en", batch_size=12, quant=None)
+    result = whisper.transcribe(audio_path=audio_path)
+    text = result['text']
+    generate_srt(text, srt_path)
+except Exception as e:
+    print(f"Failed to transcribe audio: {e}")
+    sys.exit(1)
+EOF
+
+# Burn subtitles into video
+ffmpeg -i "$VIDEO_PATH" -vf subtitles="$SUBTITLES_PATH" "$CAPTIONED_VIDEO_PATH"
+
+echo "Captioned video created at $CAPTIONED_VIDEO_PATH"
